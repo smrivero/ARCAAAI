@@ -11,7 +11,16 @@ import {
   listWsfeVouchers,
   WsfeError,
 } from "../arca/wsfev1.js";
-import { renderInvoicePdfBuffer, PlaywrightPdfSetupError } from "../pdf/invoice-pdf.js";
+import {
+  renderInvoicePdfBuffer,
+  PlaywrightPdfSetupError,
+} from "../pdf/invoice-pdf.js";
+import { voucherPdfPostBodySchema } from "../pdf/invoice-models.js";
+import {
+  applyVoucherPdfMetadataToPayload,
+  mergeVoucherPdfPostIntoPayload,
+  parseVoucherPdfQueryMetadata,
+} from "../pdf/invoice-pdf-merge.js";
 import {
   getWsaaTicketAccess,
   WsaaAlreadyAuthenticatedError,
@@ -162,9 +171,9 @@ export async function arcaRoutes(app: FastifyInstance) {
       const payload = await listWsfeVouchers({
         ptoVta,
         cbteTipo,
-        limit: limitParsed,
-        fromDate,
-        toDate,
+        ...(limitParsed !== undefined ? { limit: limitParsed } : {}),
+        ...(fromDate !== undefined ? { fromDate } : {}),
+        ...(toDate !== undefined ? { toDate } : {}),
       });
       return payload;
     } catch (err) {
@@ -185,9 +194,14 @@ export async function arcaRoutes(app: FastifyInstance) {
   });
 
   /**
-   * WSFE homo: PDF de un comprobante ya autorizado (`FECompConsultar` + plantilla ARCA-like).
-   * Query obligatorios: ptoVta, cbteTipo, cbteNro. Header `Content-Disposition`: inline PDF.
-   * Emisor en el PDF: `ARCA_CUIT` (+ opcional `ARCA_PDF_ISSUER_*`).
+   * WSFE homo: PDF de un comprobante ya autorizado (`FECompConsultar` + plantilla estilo Comprobantes en Línea ARCA).
+   * Query obligatorios: ptoVta, cbteTipo, cbteNro.
+   *
+   * Opcionales (datos comerciales no provistos por WSFE o para reemplazar env):
+   * issuerName, issuerAddress, issuerIvaCondition, issuerIibb, issuerActivityStartDate,
+   * receiverName, receiverAddress, receiverIvaCondition, saleCondition,
+   * serviceFrom, serviceTo, paymentDueDate, itemDescription.
+   * `copies`: omiso o `original` → solo ORIGINAL; `all` → ORIGINAL+DUPLICADO+TRIPLICADO; `original,duplicado` combina.
    */
   app.get("/wsfe/voucher-pdf", async (request, reply) => {
     try {
@@ -248,6 +262,8 @@ export async function arcaRoutes(app: FastifyInstance) {
         throw mapErr;
       }
 
+      payload = applyVoucherPdfMetadataToPayload(payload, parseVoucherPdfQueryMetadata(q));
+
       const pdfBuf = await renderInvoicePdfBuffer(payload);
       const filename = `invoice-${cbteTipo}-${ptoVta}-${cbteNro}.pdf`;
       reply.header("Content-Type", "application/pdf");
@@ -268,6 +284,83 @@ export async function arcaRoutes(app: FastifyInstance) {
           ? { errName: err.name, errMessage: err.message }
           : { err: String(err) },
         "GET /arca/wsfe/voucher-pdf failed",
+      );
+      const message = err instanceof Error ? err.message : String(err);
+      return await reply.status(500).send({ ok: false, error: message });
+    }
+  });
+
+  /**
+   * Igual que GET `/wsfe/voucher-pdf`, pero permite enriquecer emisor/receptor/ítems/plazos en el JSON
+   * (FECompConsultar sigue siendo la fuente de CAE y totales fiscales).
+   */
+  app.post("/wsfe/voucher-pdf", async (request, reply) => {
+    const parsed = voucherPdfPostBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      const issues = parsed.error.issues.map((i) => i.message).join("; ");
+      return await reply.status(400).send({
+        ok: false,
+        error: `Body inválido: ${issues}`,
+      });
+    }
+    const body = parsed.data;
+    const { ptoVta, cbteTipo, cbteNro } = body;
+
+    try {
+      const row = await feCompConsultar({ ptoVta, cbteTipo, cbteNro });
+      if (row === null) {
+        return await reply.status(404).send({
+          ok: false,
+          error: "Comprobante no encontrado.",
+        });
+      }
+
+      if (extractCaeFromConsultarResult(row) === null) {
+        return await reply.status(400).send({
+          ok: false,
+          error: "El comprobante no tiene CAE (CodAutorizacion) para generar PDF.",
+        });
+      }
+
+      let payload;
+      try {
+        payload = mapFeCompConsultarToInvoicePdfPayload(row, {
+          ptoVta,
+          cbteTipo,
+          cbteNro,
+        });
+      } catch (mapErr) {
+        const msg = mapErr instanceof Error ? mapErr.message : String(mapErr);
+        if (msg.includes("ARCA_CUIT")) {
+          request.log.warn({ errMsg: msg }, "POST /arca/wsfe/voucher-pdf configuración");
+          return await reply.status(400).send({ ok: false, error: msg });
+        }
+        throw mapErr;
+      }
+
+      payload = mergeVoucherPdfPostIntoPayload(payload, body);
+      console.log("[pdf] merged invoice data", JSON.stringify(payload, null, 2));
+
+      const pdfBuf = await renderInvoicePdfBuffer(payload);
+      const filename = `invoice-${cbteTipo}-${ptoVta}-${cbteNro}.pdf`;
+      reply.header("Content-Type", "application/pdf");
+      reply.header("Content-Disposition", `inline; filename="${filename}"`);
+      return await reply.send(pdfBuf);
+    } catch (err) {
+      if (err instanceof PlaywrightPdfSetupError) {
+        request.log.warn({ errMsg: err.message }, "POST /arca/wsfe/voucher-pdf sin navegador PDF");
+        return await reply.status(503).send({ ok: false, error: err.message });
+      }
+      if (err instanceof WsfeError) {
+        const status = err.message.includes("tmp/ta.json") ? 400 : 502;
+        request.log.warn({ errMsg: err.message }, "POST /arca/wsfe/voucher-pdf");
+        return await reply.status(status).send({ ok: false, error: err.message });
+      }
+      request.log.error(
+        err instanceof Error
+          ? { errName: err.name, errMessage: err.message }
+          : { err: String(err) },
+        "POST /arca/wsfe/voucher-pdf failed",
       );
       const message = err instanceof Error ? err.message : String(err);
       return await reply.status(500).send({ ok: false, error: message });

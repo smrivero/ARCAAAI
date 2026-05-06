@@ -55,13 +55,61 @@ const CBTE_TIPO_DISPLAY: Partial<
 };
 
 const DOC_RECEPTOR_IVAGUESS: Partial<Record<number, string>> = {
-  80: "CUIT receptor",
+  80: "IVA Responsable Inscripto",
+  96: "DNI",
+  99: "Consumidor Final",
   86: "CUIL receptor",
   87: "CDI receptor",
   89: "Pasaporte receptor",
-  96: "DNI receptor",
-  99: "Consumidor Final",
 };
+
+/** Código alícuota AFIP (IVA tipo) → etiqueta columna y fila de totales. */
+const ALIC_ID_PERCENT: Record<string, string> = {
+  "3": "0%",
+  "4": "10,5%",
+  "5": "21%",
+  "6": "27%",
+  "8": "5%",
+  "9": "2,5%",
+};
+
+const CANON_IVA_LABELS_FE = [
+  "IVA 27%",
+  "IVA 21%",
+  "IVA 10.5%",
+  "IVA 5%",
+  "IVA 2.5%",
+  "IVA 0%",
+] as const;
+
+const ID_TO_TOTAL_LABEL: Record<string, string> = {
+  "6": "IVA 27%",
+  "5": "IVA 21%",
+  "4": "IVA 10.5%",
+  "8": "IVA 5%",
+  "9": "IVA 2.5%",
+  "3": "IVA 0%",
+};
+
+function buildCanonicalIvaLines(alicList: Array<Record<string, unknown>>): Array<{
+  label: string;
+  amount: number;
+}> {
+  const sums = new Map<string, number>();
+  for (const row of alicList) {
+    const id = String(row["Id"] ?? "").trim();
+    const label = ID_TO_TOTAL_LABEL[id];
+    if (label === undefined) {
+      continue;
+    }
+    const imp = parseMoney(row["Importe"]);
+    sums.set(label, (sums.get(label) ?? 0) + imp);
+  }
+  return CANON_IVA_LABELS_FE.map((label) => ({
+    label,
+    amount: sums.get(label) ?? 0,
+  }));
+}
 
 function voucherKind(cbteTipo: number): { letter: string; typeName: string; code: string } {
   const code = String(cbteTipo).padStart(3, "0");
@@ -137,20 +185,28 @@ export function mapFeCompConsultarToInvoicePdfPayload(
   const impOpEx = parseMoney(rg["ImpOpEx"]);
 
   const alicList = normalizeAlicIvaRecords(rg["Iva"]);
+  const defaultLineDesc =
+    process.env["ARCA_PDF_LINE_DESCRIPTION"]?.trim() || "Concepto según comprobante autorizado (WSFE)";
+
   const items: InvoicePdfPayload["items"] =
     alicList.length > 0
-      ? alicList.map((row) => {
-          const id = String(row["Id"] ?? "?");
+      ? alicList.map((row, idx) => {
+          const id = String(row["Id"] ?? "").trim();
           const base = parseMoney(row["BaseImp"]);
           const imp = parseMoney(row["Importe"]);
+          const alicLbl = ALIC_ID_PERCENT[id] ?? `${id}%`;
           return {
-            description: `Gravado IVA código ${id} (neto + IVA ${imp.toFixed(2)})`,
+            code: id,
+            description:
+              alicList.length === 1 ? defaultLineDesc : `Línea ${idx + 1} · alícuota ${alicLbl}`,
             quantity: 1,
             unit: "unidades",
             unitPrice: base,
             discountPercent: 0,
             discountAmount: 0,
             subtotal: base,
+            alicuotaIva: alicLbl,
+            subtotalWithIva: base + imp,
           };
         })
       : [
@@ -162,8 +218,13 @@ export function mapFeCompConsultarToInvoicePdfPayload(
             discountPercent: 0,
             discountAmount: 0,
             subtotal: impNeto,
+            alicuotaIva: "—",
+            subtotalWithIva: impNeto,
           },
         ];
+
+  const ivaLinesResult =
+    alicList.length > 0 ? buildCanonicalIvaLines(alicList) : undefined;
 
   const docTipo = parseIntLoose(rg["DocTipo"]);
   const docNro = parseIntLoose(rg["DocNro"]);
@@ -180,6 +241,8 @@ export function mapFeCompConsultarToInvoicePdfPayload(
   const monedaRaw = String(rg["MonId"] ?? "PES").trim() || "PES";
   const ctz = parseMoney(rg["MonCotiz"]);
   const ctzPos = ctz > 0 ? ctz : 1;
+
+  const cbuPdf = process.env["ARCA_PDF_CBU"]?.trim();
 
   return {
     copyTypes: ["ORIGINAL"],
@@ -222,12 +285,15 @@ export function mapFeCompConsultarToInvoicePdfPayload(
       caeDueDate: caeDueDdmmyyyy,
       moneda: monedaRaw,
       ctz: ctzPos,
+      ...(cbuPdf !== undefined && cbuPdf !== "" ? { cbu: cbuPdf } : {}),
     },
     items,
     totals: {
       subtotal: impNeto,
+      importeNetoGravado: impNeto,
       otherTaxes: impTrib + impOpEx,
       total: impTotal,
+      ...(ivaLinesResult !== undefined ? { ivaLines: ivaLinesResult } : {}),
     },
   };
 }

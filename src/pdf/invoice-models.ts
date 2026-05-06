@@ -2,6 +2,22 @@ import { z } from "zod";
 
 const copyTypeEnum = z.enum(["ORIGINAL", "DUPLICADO", "TRIPLICADO"]);
 
+/** Línea de detalle en el PDF (tabla ítems). */
+export const invoiceLineItemSchema = z.object({
+  code: z.string().optional(),
+  description: z.string(),
+  quantity: z.number(),
+  unit: z.string(),
+  unitPrice: z.number(),
+  discountPercent: z.number(),
+  discountAmount: z.number(),
+  subtotal: z.number(),
+  /** Texto columna Alicuota (p. ej. "21 %"). */
+  alicuotaIva: z.string().optional(),
+  /** Subtotal con IVA de la línea. */
+  subtotalWithIva: z.number().optional(),
+});
+
 export const invoicePdfBodySchema = z.object({
   copyTypes: z.array(copyTypeEnum).min(1),
   issuer: z.object({
@@ -36,25 +52,70 @@ export const invoicePdfBodySchema = z.object({
     caeDueDate: z.string().min(1),
     moneda: z.string().min(1).optional(),
     ctz: z.number().positive().optional(),
+    /** Opcional. Pie del comprobante (estilo ARCA). */
+    cbu: z.string().optional(),
   }),
-  items: z
-    .array(
-      z.object({
-        description: z.string(),
-        quantity: z.number(),
-        unit: z.string(),
-        unitPrice: z.number(),
-        discountPercent: z.number(),
-        discountAmount: z.number(),
-        subtotal: z.number(),
-      }),
-    )
-    .min(1),
+  items: z.array(invoiceLineItemSchema).min(1),
   totals: z.object({
+    /** Neto gravado (Importe Neto Gravado). Suele igualar subtotal gravado. */
     subtotal: z.number(),
     otherTaxes: z.number(),
     total: z.number(),
+    /** Si falta en plantilla se usa subtotal. */
+    importeNetoGravado: z.number().optional(),
+    /**
+     * Desglose IVA tipo comprobante ARCA (27 %, 21 %, …). Si falta, la plantilla lo infiere.
+     */
+    ivaLines: z
+      .array(
+        z.object({
+          label: z.string(),
+          amount: z.number(),
+        }),
+      )
+      .optional(),
   }),
 });
 
 export type InvoicePdfPayload = z.infer<typeof invoicePdfBodySchema>;
+
+/**
+ * POST `/arca/wsfe/voucher-pdf`: comprobante fiscal desde WSFE + datos comerciales opcionales.
+ * Los totales y CAE provienen de `FECompConsultar`; issuer/receiver/ítems pueden enriquecerse.
+ */
+export const voucherPdfPostBodySchema = z.object({
+  ptoVta: z.number().int().min(1).max(99999),
+  cbteTipo: z.number().int().min(1),
+  cbteNro: z.number().int().min(1),
+  copies: z.array(copyTypeEnum).min(1).optional(),
+  issuer: z
+    .object({
+      name: z.string().min(1).optional(),
+      cuit: z.string().min(1).optional(),
+      address: z.string().min(1).optional(),
+      ivaCondition: z.string().min(1).optional(),
+      iibb: z.string().optional(),
+      activityStartDate: z.string().optional(),
+    })
+    .optional(),
+  receiver: z
+    .object({
+      name: z.string().min(1).optional(),
+      cuit: z.string().optional(),
+      ivaCondition: z.string().min(1).optional(),
+      address: z.string().min(1).optional(),
+    })
+    .optional(),
+  voucherExtra: z
+    .object({
+      saleCondition: z.string().min(1).optional(),
+      serviceFrom: z.string().min(1).optional(),
+      serviceTo: z.string().min(1).optional(),
+      paymentDueDate: z.string().min(1).optional(),
+      cbu: z.string().optional(),
+    })
+    .optional(),
+  items: z.array(invoiceLineItemSchema).min(1).optional(),
+});
+
+export type VoucherPdfPostBody = z.infer<typeof voucherPdfPostBodySchema>;

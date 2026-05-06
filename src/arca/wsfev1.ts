@@ -371,9 +371,10 @@ function isConsultarSkippedNotFound(errs: string[]): boolean {
   }
   for (const err of errs) {
     const codeMatch = /^(\d+)\s*:/.exec(err);
+    const codeStr = codeMatch?.[1];
     if (
-      codeMatch !== null &&
-      FE_COMP_CONSULTAR_NOT_FOUND_CODES.has(Number.parseInt(codeMatch[1], 10))
+      codeStr !== undefined &&
+      FE_COMP_CONSULTAR_NOT_FOUND_CODES.has(Number.parseInt(codeStr, 10))
     ) {
       return true;
     }

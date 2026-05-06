@@ -1,7 +1,9 @@
+import "dotenv/config";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { healthRoutes } from "./routes/health.routes.js";
 import { arcaRoutes } from "./routes/arca.routes.js";
+import { pdfRoutes } from "./routes/pdf.routes.js";
 const app = Fastify({
     logger: true,
 });
@@ -10,6 +12,7 @@ await app.register(cors, {
 });
 await app.register(healthRoutes);
 await app.register(arcaRoutes, { prefix: "/arca" });
+await app.register(pdfRoutes, { prefix: "/pdf" });
 const port = Number(process.env.PORT ?? 3000);
 try {
     await app.listen({ port, host: "0.0.0.0" });

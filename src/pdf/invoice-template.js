@@ -1,110 +1,88 @@
-import type { InvoicePdfPayload } from "./invoice-models.js";
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function escapeHtml(s) {
+    return s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
 }
-
-function onlyDigits(s: string): string {
-  return s.replace(/\D/g, "");
+function onlyDigits(s) {
+    return s.replace(/\D/g, "");
 }
-
 /** CUIT argentino XX-XXXXXXXX-X */
-export function formatCuitDisplay(raw: string): string {
-  const d = onlyDigits(raw);
-  if (d.length !== 11) {
-    return escapeHtml(raw.trim());
-  }
-  return `${d.slice(0, 2)}-${d.slice(2, 10)}-${d.slice(10)}`;
+export function formatCuitDisplay(raw) {
+    const d = onlyDigits(raw);
+    if (d.length !== 11) {
+        return escapeHtml(raw.trim());
+    }
+    return `${d.slice(0, 2)}-${d.slice(2, 10)}-${d.slice(10)}`;
 }
-
 /** Montos estilo ARCA: coma decimal, sin separador de miles. */
-export function formatArAmountCompact(n: number): string {
-  const [intRaw, frac] = Number.isFinite(n) ? n.toFixed(2).split(".") : ["0", "00"];
-  return `${intRaw},${frac}`;
+export function formatArAmountCompact(n) {
+    const [intRaw, frac] = Number.isFinite(n) ? n.toFixed(2).split(".") : ["0", "00"];
+    return `${intRaw},${frac}`;
 }
-
-export function formatArAmount(n: number): string {
-  return formatArAmountCompact(n);
+export function formatArAmount(n) {
+    return formatArAmountCompact(n);
 }
-
 const CANON_IVA_LABELS = [
-  "IVA 27%",
-  "IVA 21%",
-  "IVA 10.5%",
-  "IVA 5%",
-  "IVA 2.5%",
-  "IVA 0%",
-] as const;
-
-function resolveCbteTipoForDisplay(v: InvoicePdfPayload["voucher"]): number {
-  if (v.cbteTipo !== undefined) {
-    return v.cbteTipo;
-  }
-  const p = Number.parseInt(v.code, 10);
-  return Number.isFinite(p) ? p : 0;
+    "IVA 27%",
+    "IVA 21%",
+    "IVA 10.5%",
+    "IVA 5%",
+    "IVA 2.5%",
+    "IVA 0%",
+];
+function resolveCbteTipoForDisplay(v) {
+    if (v.cbteTipo !== undefined) {
+        return v.cbteTipo;
+    }
+    const p = Number.parseInt(v.code, 10);
+    return Number.isFinite(p) ? p : 0;
 }
-
 /**
  * COD. junto al sello tipo ARCA Comprobantes en línea:
  * letra/categoría B → 2 dígitos (ej. Factura B 06), C y similares → 3 (ej. 011).
  */
-function stampCodAfipLike(v: InvoicePdfPayload["voucher"]): string {
-  const t = resolveCbteTipoForDisplay(v);
-  if (v.letter === "C" || t >= 11) {
-    return String(t).padStart(3, "0");
-  }
-  return String(t).padStart(2, "0");
+function stampCodAfipLike(v) {
+    const t = resolveCbteTipoForDisplay(v);
+    if (v.letter === "C" || t >= 11) {
+        return String(t).padStart(3, "0");
+    }
+    return String(t).padStart(2, "0");
 }
-
-function isFacturaTipoALetter(v: InvoicePdfPayload["voucher"]): boolean {
-  if (v.letter === "A") {
-    return true;
-  }
-  const t = resolveCbteTipoForDisplay(v);
-  return t === 1 || t === 2 || t === 3;
+function isFacturaTipoALetter(v) {
+    if (v.letter === "A") {
+        return true;
+    }
+    const t = resolveCbteTipoForDisplay(v);
+    return t === 1 || t === 2 || t === 3;
 }
-
-function resolveIvaRowsForTotals(totals: InvoicePdfPayload["totals"]): Array<{
-  label: string;
-  amount: number;
-}> {
-  if (totals.ivaLines !== undefined && totals.ivaLines.length > 0) {
-    const map = new Map(totals.ivaLines.map((r) => [r.label, r.amount]));
-    return CANON_IVA_LABELS.map((label) => ({
-      label,
-      amount: map.get(label) ?? 0,
-    }));
-  }
-  const neto = totals.importeNetoGravado ?? totals.subtotal;
-  const impl = Math.max(0, totals.total - neto - totals.otherTaxes);
-  return CANON_IVA_LABELS.map((label, idx) =>
-    idx === 1 ? { label, amount: impl } : { label, amount: 0 },
-  );
+function resolveIvaRowsForTotals(totals) {
+    if (totals.ivaLines !== undefined && totals.ivaLines.length > 0) {
+        const map = new Map(totals.ivaLines.map((r) => [r.label, r.amount]));
+        return CANON_IVA_LABELS.map((label) => ({
+            label,
+            amount: map.get(label) ?? 0,
+        }));
+    }
+    const neto = totals.importeNetoGravado ?? totals.subtotal;
+    const impl = Math.max(0, totals.total - neto - totals.otherTaxes);
+    return CANON_IVA_LABELS.map((label, idx) => idx === 1 ? { label, amount: impl } : { label, amount: 0 });
 }
-
-function lineSubtotalConIva(it: InvoicePdfPayload["items"][0]): number {
-  if (it.subtotalWithIva !== undefined) {
-    return it.subtotalWithIva;
-  }
-  return it.subtotal;
+function lineSubtotalConIva(it) {
+    if (it.subtotalWithIva !== undefined) {
+        return it.subtotalWithIva;
+    }
+    return it.subtotal;
 }
-
-function buildItemsRows(items: InvoicePdfPayload["items"], showIva: boolean): string {
-  const itemCode = (it: InvoicePdfPayload["items"][0]): string =>
-    it.code !== undefined && it.code.trim() !== "" ? escapeHtml(it.code.trim()) : "—";
-
-  const itemAlic = (it: InvoicePdfPayload["items"][0]): string =>
-    it.alicuotaIva !== undefined && it.alicuotaIva.trim() !== ""
-      ? escapeHtml(it.alicuotaIva.trim())
-      : "—";
-
-  return items
-    .map((it) => {
-      const core = `<tr>
+function buildItemsRows(items, showIva) {
+    const itemCode = (it) => it.code !== undefined && it.code.trim() !== "" ? escapeHtml(it.code.trim()) : "—";
+    const itemAlic = (it) => it.alicuotaIva !== undefined && it.alicuotaIva.trim() !== ""
+        ? escapeHtml(it.alicuotaIva.trim())
+        : "—";
+    return items
+        .map((it) => {
+        const core = `<tr>
           <td class="c-code">${itemCode(it)}</td>
           <td class="c-desc">${escapeHtml(it.description)}</td>
           <td class="num">${formatArAmountCompact(it.quantity)}</td>
@@ -113,77 +91,57 @@ function buildItemsRows(items: InvoicePdfPayload["items"], showIva: boolean): st
           <td class="num">${formatArAmountCompact(it.discountPercent)}</td>
           <td class="num">${formatArAmountCompact(it.discountAmount)}</td>
           <td class="num">${formatArAmountCompact(it.subtotal)}</td>`;
-      const ivaCols = showIva
-        ? `
+        const ivaCols = showIva
+            ? `
           <td class="c-alic">${itemAlic(it)}</td>
           <td class="num">${formatArAmountCompact(lineSubtotalConIva(it))}</td>`
-        : "";
-      return `${core}${ivaCols}</tr>`;
+            : "";
+        return `${core}${ivaCols}</tr>`;
     })
-    .join("");
+        .join("");
 }
-
-export function buildInvoiceHtml(data: InvoicePdfPayload, qrDataUrl: string): string {
-  const showIvaCols = isFacturaTipoALetter(data.voucher);
-  const stampCod = stampCodAfipLike(data.voucher);
-  const ptoFmt = String(data.voucher.ptoVta).padStart(5, "0");
-  const nroFmt = String(data.voucher.number).padStart(8, "0");
-  const iss = data.issuer;
-  const rec = data.receiver;
-  const v = data.voucher;
-
-  const iibbLine =
-    iss.iibb !== undefined && iss.iibb.trim() !== ""
-      ? `<div class="hdr-field"><span class="lbl">Ingresos Brutos:</span> ${escapeHtml(iss.iibb.trim())}</div>`
-      : "";
-  const actLine =
-    iss.activityStartDate !== undefined && iss.activityStartDate.trim() !== ""
-      ? `<div class="hdr-field"><span class="lbl">Fecha de Inicio de Actividades:</span> ${escapeHtml(
-          iss.activityStartDate.trim(),
-        )}</div>`
-      : "";
-
-  const itemsRows = buildItemsRows(data.items, showIvaCols);
-
-  const netoGravado = data.totals.importeNetoGravado ?? data.totals.subtotal;
-  const ivaRowsRaw = resolveIvaRowsForTotals(data.totals);
-
-  let totalsRightInner: string;
-  if (showIvaCols) {
-    totalsRightInner = `
-        <div class="tot-line"><span>Importe Neto Gravado:</span><span class="money">$ ${formatArAmountCompact(
-          netoGravado,
-        )}</span></div>
+export function buildInvoiceHtml(data, qrDataUrl) {
+    const showIvaCols = isFacturaTipoALetter(data.voucher);
+    const stampCod = stampCodAfipLike(data.voucher);
+    const ptoFmt = String(data.voucher.ptoVta).padStart(5, "0");
+    const nroFmt = String(data.voucher.number).padStart(8, "0");
+    const iss = data.issuer;
+    const rec = data.receiver;
+    const v = data.voucher;
+    const iibbLine = iss.iibb !== undefined && iss.iibb.trim() !== ""
+        ? `<div class="hdr-field"><span class="lbl">Ingresos Brutos:</span> ${escapeHtml(iss.iibb.trim())}</div>`
+        : "";
+    const actLine = iss.activityStartDate !== undefined && iss.activityStartDate.trim() !== ""
+        ? `<div class="hdr-field"><span class="lbl">Fecha de Inicio de Actividades:</span> ${escapeHtml(iss.activityStartDate.trim())}</div>`
+        : "";
+    const itemsRows = buildItemsRows(data.items, showIvaCols);
+    const netoGravado = data.totals.importeNetoGravado ?? data.totals.subtotal;
+    const ivaRowsRaw = resolveIvaRowsForTotals(data.totals);
+    let totalsRightInner;
+    if (showIvaCols) {
+        totalsRightInner = `
+        <div class="tot-line"><span>Importe Neto Gravado:</span><span class="money">$ ${formatArAmountCompact(netoGravado)}</span></div>
         ${ivaRowsRaw
-          .map(
-            (r) =>
-              `<div class="tot-line"><span>${escapeHtml(r.label)}:</span><span class="money">$ ${formatArAmountCompact(r.amount)}</span></div>`,
-          )
-          .join("")}
+            .map((r) => `<div class="tot-line"><span>${escapeHtml(r.label)}:</span><span class="money">$ ${formatArAmountCompact(r.amount)}</span></div>`)
+            .join("")}
         <div class="tot-line"><span>Importe Otros Tributos:</span><span class="money">$ ${formatArAmountCompact(data.totals.otherTaxes)}</span></div>
         <div class="tot-line total-final"><span>Importe Total:</span><span class="money">$ ${formatArAmountCompact(data.totals.total)}</span></div>`;
-  } else {
-    totalsRightInner = `
+    }
+    else {
+        totalsRightInner = `
         <div class="tot-line"><span>Importe Neto Gravado:</span><span class="money">$ ${formatArAmountCompact(netoGravado)}</span></div>
         <div class="tot-line"><span>Importe Otros Tributos:</span><span class="money">$ ${formatArAmountCompact(data.totals.otherTaxes)}</span></div>
         <div class="tot-line total-final"><span>Importe Total:</span><span class="money">$ ${formatArAmountCompact(data.totals.total)}</span></div>`;
-  }
-
-  const cbuBlock =
-    v.cbu !== undefined && v.cbu.trim() !== ""
-      ? `<div class="cbu-line">C.B.U.: ${escapeHtml(v.cbu.trim())}</div>`
-      : "";
-
-  const theadIva = showIvaCols
-    ? `<th>Al&#237;cuota IVA</th><th>Subtotal c/IVA</th>`
-    : "";
-
-  const receiverCuitDisplay =
-    rec.cuit !== undefined && rec.cuit.trim() !== "" ? formatCuitDisplay(rec.cuit) : "—";
-
-  const copyPages = data.copyTypes
-    .map((copyLabel, idx) =>
-      renderArcaCopyPage({
+    }
+    const cbuBlock = v.cbu !== undefined && v.cbu.trim() !== ""
+        ? `<div class="cbu-line">C.B.U.: ${escapeHtml(v.cbu.trim())}</div>`
+        : "";
+    const theadIva = showIvaCols
+        ? `<th>Al&#237;cuota IVA</th><th>Subtotal c/IVA</th>`
+        : "";
+    const receiverCuitDisplay = rec.cuit !== undefined && rec.cuit.trim() !== "" ? formatCuitDisplay(rec.cuit) : "—";
+    const copyPages = data.copyTypes
+        .map((copyLabel, idx) => renderArcaCopyPage({
         copyLabel,
         copyIndex: idx + 1,
         totalCopies: data.copyTypes.length,
@@ -202,11 +160,9 @@ export function buildInvoiceHtml(data: InvoicePdfPayload, qrDataUrl: string): st
         totalsRightInner,
         cbuBlock,
         theadIva,
-      }),
-    )
-    .join("\n");
-
-  return `<!DOCTYPE html>
+    }))
+        .join("\n");
+    return `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
@@ -641,49 +597,9 @@ export function buildInvoiceHtml(data: InvoicePdfPayload, qrDataUrl: string): st
 <body>${copyPages}</body>
 </html>`;
 }
-
-function renderArcaCopyPage(parts: {
-  copyLabel: string;
-  copyIndex: number;
-  totalCopies: number;
-  data: InvoicePdfPayload;
-  qrDataUrl: string;
-  ptoFmt: string;
-  nroFmt: string;
-  stampCod: string;
-  issuer: InvoicePdfPayload["issuer"];
-  receiver: InvoicePdfPayload["receiver"];
-  voucher: InvoicePdfPayload["voucher"];
-  receiverCuitDisplay: string;
-  iibbLine: string;
-  actLine: string;
-  itemsRows: string;
-  totalsRightInner: string;
-  cbuBlock: string;
-  theadIva: string;
-}): string {
-  const {
-    copyLabel,
-    copyIndex,
-    totalCopies,
-    data,
-    qrDataUrl,
-    ptoFmt,
-    nroFmt,
-    stampCod,
-    issuer: iss,
-    receiver: rec,
-    voucher: v,
-    receiverCuitDisplay,
-    iibbLine,
-    actLine,
-    itemsRows,
-    totalsRightInner,
-    cbuBlock,
-    theadIva,
-  } = parts;
-
-  return `<section class="sheet">
+function renderArcaCopyPage(parts) {
+    const { copyLabel, copyIndex, totalCopies, data, qrDataUrl, ptoFmt, nroFmt, stampCod, issuer: iss, receiver: rec, voucher: v, receiverCuitDisplay, iibbLine, actLine, itemsRows, totalsRightInner, cbuBlock, theadIva, } = parts;
+    return `<section class="sheet">
   <div class="page">
     <div class="invoice-sheet">
       <div class="copy-band">${escapeHtml(copyLabel)}</div>
@@ -787,3 +703,4 @@ function renderArcaCopyPage(parts: {
   </div>
 </section>`;
 }
+//# sourceMappingURL=invoice-template.js.map

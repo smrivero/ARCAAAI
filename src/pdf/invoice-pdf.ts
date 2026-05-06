@@ -201,5 +201,5 @@ export async function renderInvoicePdf(payload: InvoicePdfPayload): Promise<{
   return { path: outPath, filename };
 }
 
-export { invoicePdfBodySchema } from "./invoice-models.js";
+export { invoicePdfBodySchema, voucherPdfPostBodySchema } from "./invoice-models.js";
 export type { InvoicePdfPayload } from "./invoice-models.js";
