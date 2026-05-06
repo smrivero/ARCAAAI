@@ -13,7 +13,8 @@
 - En **desarrollo** se loguean **token y sign completos** en consola (`logReturnedTa`). No apto para producción.
 - Tras **`saveTAToDisk`** se confirma por log: ruta absoluta vía `cwd` + tamaño en bytes del archivo.
 - `.gitignore` en raíz ignora **`tmp/`** (el JSON del TA es sensible).
-- Dependencias añadidas: `axios`, `fast-xml-parser`.
+- Dependencias añadidas: `axios`, `fast-xml-parser`, **`playwright`**, **`qrcode`** (PDF comprobantes).
+- **Ruta** `POST /pdf/invoice` — body JSON validado con Zod (`invoicePdfBodySchema` en `src/pdf/invoice-models.ts`); genera PDF en **`tmp/invoices/{cuit11}_{cbteTipo}_{ptoVta}_{numero}.pdf`** vía HTML + **Playwright** (`src/pdf/invoice-template.ts`, `src/pdf/invoice-pdf.ts`); intenta **Chromium bundleado**, luego canal **Chrome / Edge** instalado; opcional `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`; si nada funciona **503** (`PlaywrightPdfSetupError`). **`renderInvoicePdfBuffer`** para otros endpoints; QR AFIP `https://www.afip.gob.ar/fe/qr/?p=` + base64url del JSON (ver, fecha, cuit, ptoVta, tipoCmp, nroCmp, importe, moneda, ctz, tipoDocRec, nroDocRec, tipoCodAut **E**, codAut). Respuesta `{ ok, path, filename }`.
 - **Ruta** `GET /arca/wsaa/login` — devuelve `generationTime`; **409** si AFIP marca TA válido pero no hay entrada usable en `./tmp/ta.json` (ni TA en memoria).
 - Módulo **WSFEv1 (homologación)** en `src/arca/wsfev1.ts`:
   - Wrapper `loadTAFromDisk()` sobre `wsaa`; `buildSoapEnvelope()`, `callWSFEV1()`, `parseWsfeSoapXml()`.
@@ -25,7 +26,7 @@
   - `loadTaAndCuitForWsfe()` + `buildAuthBlock(..., { logPreview })` para reutilizar TA/CUIT y silenciar previews en listado/consultas puntuales.
   - Body Zod **create-voucher**: `condicionIVAReceptorId` opcional — obligatorio si `docTipo !== 99`; si es consumidor final (`docTipo === 99`) y se omite, se usa **5**.
   - En logs WSFE no se muestra token/sign completo (solo prefijo corto cuando `logPreview` está activo).
-- **Ruta** `GET /arca/wsfe/vouchers` — obligatorios `ptoVta`, `cbteTipo`; `limit` opcional default 20, máximo 100; `fromDate`/`toDate` yyyymmdd opcionales; respuesta `{ ok, ptoVta, cbteTipo, lastVoucherNumber, count, vouchers[] }`.
+- **Ruta** `GET /arca/wsfe/voucher-pdf` — obligatorios `ptoVta`, `cbteTipo`, `cbteNro`; `FECompConsultar` + `renderInvoicePdfBuffer`; **404** si no hay comprobante; **400** sin CAE; **503** si falta navegador para Playwright (ver env PDF). Respuesta **`application/pdf`**, `Content-Disposition: inline; filename="invoice-{cbteTipo}-{ptoVta}-{cbteNro}.pdf"`. Datos emitente PDF: **`ARCA_CUIT`** (+ `ARCA_PDF_ISSUER_NAME`, `ARCA_PDF_ISSUER_IVA_CONDITION`, `ARCA_PDF_ISSUER_ADDRESS`, opcionales `ARCA_PDF_ISSUER_IIBB`, `ARCA_PDF_ISSUER_ACTIVITY_START`).
 - **Ruta** `POST /arca/wsfe/create-voucher` — `FECAESolicitar` homo; body Zod (+ regla anterior); respuesta `observations: string[]`; `ok` solo si CAE informado y `result === "A"` (caso rechazo observable sin CAE, p. ej. `R`, `ok=false` con observaciones en el payload).
 - Carga de `.env` al arrancar el servidor (`import "dotenv/config"` en `src/server.ts`).
 
@@ -35,9 +36,11 @@ Definir variables en **`.env` en la raíz del repo** (cargado al arrancar con `d
 
 - `ARCA_WSAA_URL_DEV` — endpoint WSAA homo.
 - `ARCA_CERT_PATH`, `ARCA_KEY_PATH` — rutas al certificado y clave.
-- `ARCA_CUIT` — CUIT contribuyente (requerido para WSFE Auth; dígitos, sin obligar guiones en `.env`).
+- `ARCA_CUIT` — CUIT contribuyente (requerido para WSFE Auth y para PDF consultado; dígitos, sin obligar guiones en `.env`).
+- Opcional PDF emisor (**`GET /arca/wsfe/voucher-pdf`**): `ARCA_PDF_ISSUER_NAME`, `ARCA_PDF_ISSUER_IVA_CONDITION`, `ARCA_PDF_ISSUER_ADDRESS`, `ARCA_PDF_ISSUER_IIBB`, `ARCA_PDF_ISSUER_ACTIVITY_START`.
 - `ARCA_WSFEV1_URL_DEV` — URL SOAP WSFEv1 homo (p. ej. `…/wsfev1/service.asmx`).
 - `ARCA_WSAA_SERVICE` — servicio destino (p. ej. `wsfe`); por defecto `wsfe`.
+- **PDF (Playwright):** sin binarios responde **503** con instrucciones. Instalación típica: `npx playwright install chromium`. Si tenés **Google Chrome** o **Edge** instalado, el backend intenta usarlo automáticamente. Opcional: `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` — ruta al ejecutable.
 
 ## Próximos pasos sugeridos
 

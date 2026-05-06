@@ -1,11 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import {
+  extractCaeFromConsultarResult,
+  mapFeCompConsultarToInvoicePdfPayload,
+} from "../arca/fecomp-consultar-to-invoice-pdf.js";
+import {
   createVoucherBodySchema,
   feCAESolicitar,
+  feCompConsultar,
   feCompUltimoAutorizado,
   listWsfeVouchers,
   WsfeError,
 } from "../arca/wsfev1.js";
+import { renderInvoicePdfBuffer, PlaywrightPdfSetupError } from "../pdf/invoice-pdf.js";
 import {
   getWsaaTicketAccess,
   WsaaAlreadyAuthenticatedError,
@@ -172,6 +178,96 @@ export async function arcaRoutes(app: FastifyInstance) {
           ? { errName: err.name, errMessage: err.message }
           : { err: String(err) },
         "GET /arca/wsfe/vouchers failed",
+      );
+      const message = err instanceof Error ? err.message : String(err);
+      return await reply.status(500).send({ ok: false, error: message });
+    }
+  });
+
+  /**
+   * WSFE homo: PDF de un comprobante ya autorizado (`FECompConsultar` + plantilla ARCA-like).
+   * Query obligatorios: ptoVta, cbteTipo, cbteNro. Header `Content-Disposition`: inline PDF.
+   * Emisor en el PDF: `ARCA_CUIT` (+ opcional `ARCA_PDF_ISSUER_*`).
+   */
+  app.get("/wsfe/voucher-pdf", async (request, reply) => {
+    try {
+      const q = request.query as Record<string, string | undefined>;
+      const ptoVtaRaw = q["ptoVta"];
+      const cbteTipoRaw = q["cbteTipo"];
+      const cbteNroRaw = q["cbteNro"];
+      const ptoVta = Number(ptoVtaRaw);
+      const cbteTipo = Number(cbteTipoRaw);
+      const cbteNro = Number(cbteNroRaw);
+      if (
+        ptoVtaRaw === undefined ||
+        cbteTipoRaw === undefined ||
+        cbteNroRaw === undefined ||
+        !Number.isInteger(ptoVta) ||
+        !Number.isInteger(cbteTipo) ||
+        !Number.isInteger(cbteNro) ||
+        ptoVta < 1 ||
+        ptoVta > 99999 ||
+        cbteTipo < 1 ||
+        cbteNro < 1
+      ) {
+        return await reply.status(400).send({
+          ok: false,
+          error:
+            "Query inválida: `ptoVta`, `cbteTipo` y `cbteNro` son obligatorios (enteros positivos).",
+        });
+      }
+
+      const row = await feCompConsultar({ ptoVta, cbteTipo, cbteNro });
+      if (row === null) {
+        return await reply.status(404).send({
+          ok: false,
+          error: "Comprobante no encontrado.",
+        });
+      }
+
+      if (extractCaeFromConsultarResult(row) === null) {
+        return await reply.status(400).send({
+          ok: false,
+          error: "El comprobante no tiene CAE (CodAutorizacion) para generar PDF.",
+        });
+      }
+
+      let payload;
+      try {
+        payload = mapFeCompConsultarToInvoicePdfPayload(row, {
+          ptoVta,
+          cbteTipo,
+          cbteNro,
+        });
+      } catch (mapErr) {
+        const msg = mapErr instanceof Error ? mapErr.message : String(mapErr);
+        if (msg.includes("ARCA_CUIT")) {
+          request.log.warn({ errMsg: msg }, "GET /arca/wsfe/voucher-pdf configuración");
+          return await reply.status(400).send({ ok: false, error: msg });
+        }
+        throw mapErr;
+      }
+
+      const pdfBuf = await renderInvoicePdfBuffer(payload);
+      const filename = `invoice-${cbteTipo}-${ptoVta}-${cbteNro}.pdf`;
+      reply.header("Content-Type", "application/pdf");
+      reply.header("Content-Disposition", `inline; filename="${filename}"`);
+      return await reply.send(pdfBuf);
+    } catch (err) {
+      if (err instanceof PlaywrightPdfSetupError) {
+        request.log.warn({ errMsg: err.message }, "GET /arca/wsfe/voucher-pdf sin navegador PDF");
+        return await reply.status(503).send({ ok: false, error: err.message });
+      }
+      if (err instanceof WsfeError) {
+        const status = err.message.includes("tmp/ta.json") ? 400 : 502;
+        request.log.warn({ errMsg: err.message }, "GET /arca/wsfe/voucher-pdf");
+        return await reply.status(status).send({ ok: false, error: err.message });
+      }
+      request.log.error(
+        err instanceof Error
+          ? { errName: err.name, errMessage: err.message }
+          : { err: String(err) },
+        "GET /arca/wsfe/voucher-pdf failed",
       );
       const message = err instanceof Error ? err.message : String(err);
       return await reply.status(500).send({ ok: false, error: message });
