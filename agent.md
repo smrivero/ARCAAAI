@@ -5,12 +5,13 @@
 - Módulo **WSAA LoginCms (homologación)** en `src/arca/wsaa.ts`:
   - `createLoginTicketRequest()` — XML TRA con ventanas ±10 min y `uniqueId` por timestamp.
   - `signCMS()` — firma PKCS#7 DER vía `openssl cms -sign` (cert `.crt` + clave `.key`).
-  - `parseWSAAResponse()` — extrae `token`, `sign`, `generationTime`, `expirationTime` del SOAP.
+  - `parseWSAAResponse()` — incluye fragmento `<loginCmsReturn>` **normalizado** (CDATA, PI, XML escapado con entidades hasta doble nivel) + extracción **regex** opcional (`coerceXmlLeafText` para nodos `#text`, tags con prefijo de namespace opcional).
   - `loadTAFromDisk()` / `saveTAToDisk()` / `isTAExpired()` — persistencia dev en **`tmp/ta.json`** (sync).
   - `fetchWsaaLoginTicket()` — POST SOAP siempre a `ARCA_WSAA_URL_DEV`.
   - `getWsaaTicketAccess()` — orden: **memoria** → **`tmp/ta.json`** → **WSAA**; ante `coe.alreadyAuthenticated`, reintenta con disco si el TA guardado sigue vigente.
   - `loginWSAA()` — alias de `fetchWsaaLoginTicket()` (retrocompatibilidad).
-- Logs de token/sign solo **primeros 20 caracteres** + `(truncated)`.
+- En **desarrollo** se loguean **token y sign completos** en consola (`logReturnedTa`). No apto para producción.
+- Tras **`saveTAToDisk`** se confirma por log: ruta absoluta vía `cwd` + tamaño en bytes del archivo.
 - `.gitignore` en raíz ignora **`tmp/`** (el JSON del TA es sensible).
 - Dependencias añadidas: `axios`, `fast-xml-parser`.
 - **Ruta** `GET /arca/wsaa/login` — devuelve `generationTime`; **409** si AFIP marca TA válido pero no hay entrada usable en `./tmp/ta.json` (ni TA en memoria).

@@ -178,6 +178,70 @@ function unwrapCdata(inner: string): string {
   return inner.trim().replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "").trim();
 }
 
+/** Decodifica entidades típicas cuando AFIP serializa XML escapado dentro de SOAP. */
+function decodeXmlEntitiesRough(s: string): string {
+  let out = s;
+  let prev = "";
+  for (let i = 0; i < 6 && prev !== out; i++) {
+    prev = out;
+    out = out.replace(/&#x([0-9a-f]+);/gi, (_, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    );
+    out = out.replace(/&#(\d+);/g, (_, dec: string) =>
+      String.fromCodePoint(Number.parseInt(dec, 10)),
+    );
+    out = out.replace(/&lt;/gi, "<");
+    out = out.replace(/&gt;/gi, ">");
+    out = out.replace(/&quot;/gi, '"');
+    out = out.replace(/&apos;/gi, "'");
+    out = out.replace(/&amp;/g, "&");
+  }
+  return out;
+}
+
+function stripXmlPi(s: string): string {
+  return s.replace(/^<\?xml\b[\s\S]*?\?>[\s\n]*/, "").trim();
+}
+
+/**
+ * Fragmento dentro de `<loginCmsReturn>` → XML usable (CDATA, entidades, PI).
+ */
+function normalizeLoginTicketXml(fragment: string): string {
+  let s = unwrapCdata(fragment.trim());
+  if (/&(?:lt|gt|amp|quot|apos|[#])/i.test(s)) {
+    s = decodeXmlEntitiesRough(s);
+  }
+  s = stripXmlPi(s).trim();
+  return s;
+}
+
+function extractXmlTagInner(xml: string, tag: string): string | undefined {
+  const esc = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(
+    `<(?:[\\w.-]+:)?${esc}\\b[^>]*>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${esc}>`,
+    "i",
+  );
+  const m = xml.match(re);
+  const inner = unwrapCdata(m?.[1]?.trim() ?? "");
+  return inner !== "" ? inner : undefined;
+}
+
+function coerceXmlLeafText(v: unknown): string | undefined {
+  if (typeof v === "string") {
+    const t = v.trim();
+    return t !== "" ? t : undefined;
+  }
+  if (v === null || v === undefined || typeof v !== "object" || Array.isArray(v)) {
+    return undefined;
+  }
+  const o = v as Record<string, unknown>;
+  if (typeof o["#text"] === "string") {
+    const t = o["#text"].trim();
+    return t !== "" ? t : undefined;
+  }
+  return undefined;
+}
+
 function extractExpirationTimeFromXml(xml: string): string | undefined {
   const matches = [...xml.matchAll(/<expirationTime[^>]*>([\s\S]*?)<\/expirationTime>/gi)];
   const values = matches.map((m) => unwrapCdata(m[1] ?? "")).filter(Boolean) as string[];
@@ -188,11 +252,6 @@ function extractGenerationTimeFromXml(xml: string): string | undefined {
   const matches = [...xml.matchAll(/<generationTime[^>]*>([\s\S]*?)<\/generationTime>/gi)];
   const values = matches.map((m) => unwrapCdata(m[1] ?? "")).filter(Boolean) as string[];
   return values.at(-1);
-}
-
-/** Primeros 20 caracteres; nunca loguear secreto completo. */
-function logTruncatedSecret(label: "token" | "sign", value: string): void {
-  console.log(`[wsaa] ${label}: ${value.slice(0, 20)}... (truncated)`);
 }
 
 /** Carga `./tmp/ta.json`. Devuelve null si falta archivo, JSON inválido o formato incorrecto. */
@@ -228,8 +287,10 @@ export function loadTAFromDisk(): WsaaTicketAccess | null {
 export function saveTAToDisk(ta: WsaaTicketAccess): void {
   const dir = path.dirname(TA_DISK_PATH);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(TA_DISK_PATH, JSON.stringify(ta, null, 2), "utf8");
-  console.log("[wsaa] TA guardado en", TA_DISK_PATH);
+  const payload = `${JSON.stringify(ta, null, 2)}\n`;
+  fs.writeFileSync(TA_DISK_PATH, payload, "utf8");
+  const st = fs.statSync(TA_DISK_PATH);
+  console.log("[wsaa] TA escrito en disco:", TA_DISK_PATH, "| bytes:", st.size);
 }
 
 /** Convierte el valor de expirationTime del TA a milliseconds (UTC). Devuelve null si no parsea. */
@@ -288,7 +349,7 @@ export function isTAExpired(expirationTime: string): boolean {
   return Date.now() >= deadline;
 }
 
-/** Recorre el árbol parseado y devuelve token/sign si existen como strings. */
+/** Recorre el árbol parseado y devuelve token/sign si existen como strings (#text inclusive). */
 function findTokenSignDeep(obj: unknown): { token?: string; sign?: string } {
   let token: string | undefined;
   let sign: string | undefined;
@@ -301,11 +362,13 @@ function findTokenSignDeep(obj: unknown): { token?: string; sign?: string } {
       return;
     }
     const rec = o as Record<string, unknown>;
-    if (typeof rec["token"] === "string" && token === undefined) {
-      token = rec["token"];
+    const t = coerceXmlLeafText(rec["token"]);
+    if (t !== undefined && token === undefined) {
+      token = t;
     }
-    if (typeof rec["sign"] === "string" && sign === undefined) {
-      sign = rec["sign"];
+    const s = coerceXmlLeafText(rec["sign"]);
+    if (s !== undefined && sign === undefined) {
+      sign = s;
     }
     for (const v of Object.values(rec)) walk(v);
   }
@@ -314,6 +377,30 @@ function findTokenSignDeep(obj: unknown): { token?: string; sign?: string } {
   const out: { token?: string; sign?: string } = {};
   if (token !== undefined) out.token = token;
   if (sign !== undefined) out.sign = sign;
+  return out;
+}
+
+function credentialsFromRegex(innerXml: string): {
+  token?: string;
+  sign?: string;
+  generationTime?: string;
+  expirationTime?: string;
+} {
+  const token = extractXmlTagInner(innerXml, "token");
+  const sign = extractXmlTagInner(innerXml, "sign");
+  const generationTime = extractXmlTagInner(innerXml, "generationTime");
+  const expirationTime = extractXmlTagInner(innerXml, "expirationTime");
+
+  const out: {
+    token?: string;
+    sign?: string;
+    generationTime?: string;
+    expirationTime?: string;
+  } = {};
+  if (token !== undefined) out.token = token;
+  if (sign !== undefined) out.sign = sign;
+  if (generationTime !== undefined) out.generationTime = generationTime;
+  if (expirationTime !== undefined) out.expirationTime = expirationTime;
   return out;
 }
 
@@ -363,37 +450,50 @@ export function parseWSAAResponse(soapXml: string): WsaaTicketAccess {
     return { token: deep.token, sign: deep.sign, generationTime, expirationTime };
   }
 
-  const innerMatch = soapXml.match(/<loginCmsReturn[^>]*>([\s\S]*?)<\/loginCmsReturn>/i);
+  const innerMatch = soapXml.match(
+    /<(?:[\w.-]+:)?loginCmsReturn[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?loginCmsReturn>/i,
+  );
   if (innerMatch?.[1]) {
-    let inner = innerMatch[1].trim();
-    inner = inner
-      .replace(/^<!\[CDATA\[/, "")
-      .replace(/\]\]>$/, "")
-      .trim();
-    console.log("[wsaa] parseWSAAResponse: parseando loginCmsReturn interno, bytes=", inner.length);
+    const normalized = normalizeLoginTicketXml(innerMatch[1]);
+    console.log(
+      "[wsaa] parseWSAAResponse: loginCmsReturn normalizado, bytes=",
+      normalized.length,
+    );
+
+    let innerParsed: unknown = null;
     try {
-      const innerParsed = parser.parse(inner);
-      const innerDeep = findTokenSignDeep(innerParsed);
-      const expInner = extractExpirationTimeFromXml(inner) ?? expirationFromSoap;
-      const genInner = extractGenerationTimeFromXml(inner) ?? generationFromSoap;
-      if (
-        innerDeep.token !== undefined &&
-        innerDeep.sign !== undefined &&
-        expInner !== undefined &&
-        expInner !== "" &&
-        genInner !== undefined &&
-        genInner !== ""
-      ) {
-        console.log("[wsaa] parseWSAAResponse: loginTicket desde loginCmsReturn");
-        return {
-          token: innerDeep.token,
-          sign: innerDeep.sign,
-          generationTime: genInner,
-          expirationTime: expInner,
-        };
-      }
-    } catch {
-      // seguir a error
+      innerParsed = parser.parse(normalized);
+    } catch (e) {
+      console.warn(
+        "[wsaa] parse WSAA falló sobre loginTicket normalizado; se intenta solo regex",
+      );
+    }
+
+    const innerDeep =
+      innerParsed !== null ? findTokenSignDeep(innerParsed) : { token: undefined, sign: undefined };
+    const rx = credentialsFromRegex(normalized);
+
+    const token = innerDeep.token ?? rx.token;
+    const sign = innerDeep.sign ?? rx.sign;
+    const expirationTime =
+      rx.expirationTime ??
+      extractExpirationTimeFromXml(normalized) ??
+      extractExpirationTimeFromXml(soapXml) ??
+      "";
+    const generationTime =
+      rx.generationTime ??
+      extractGenerationTimeFromXml(normalized) ??
+      extractGenerationTimeFromXml(soapXml) ??
+      "";
+
+    if (token !== undefined && sign !== undefined && expirationTime !== "" && generationTime !== "") {
+      console.log("[wsaa] parseWSAAResponse: loginTicket desde loginCmsReturn");
+      return {
+        token,
+        sign,
+        generationTime,
+        expirationTime,
+      };
     }
   }
 
@@ -473,10 +573,11 @@ function rememberTa(ta: WsaaTicketAccess, fetchedAtMs: number): WsaaTicketAccess
   return ta;
 }
 
+/** Solo desarrollo: loguea token y sign completos (no usar así en producción). */
 function logReturnedTa(source: string, ta: WsaaTicketAccess): void {
   console.log("[wsaa] TA servido desde:", source);
-  logTruncatedSecret("token", ta.token);
-  logTruncatedSecret("sign", ta.sign);
+  console.log("[wsaa] token (completo):", ta.token);
+  console.log("[wsaa] sign (completo):", ta.sign);
 }
 
 /**
