@@ -2,6 +2,10 @@
 
 ## Tareas completadas
 
+- **`src/services/arca/ta-manager.ts`**: gestor asíncrono de TA para WSFE (`getValidTA()`): lee `tmp/ta.json` con `fs/promises`, considera el TA **válido** solo si faltan **≥ 5 minutos** hasta `expirationTime` (AFIP); si falta, está corrupto o queda menos margen, llama a `fetchWsaaLoginTicket()`, guarda en disco (crea `tmp/` si hace falta) y loguea `[TA] using cached TA` / `[TA] expired, requesting new TA` / `[TA] saved new TA`. Ante `WsaaAlreadyAuthenticatedError` reintenta con TA en disco si `!isTAExpired`. Una sola renovación concurrente (`refreshInFlight`).
+- **WSFEv1** (`src/arca/wsfev1.ts`): deja de leer `ta.json` directamente en el flujo SOAP; usa `getValidTA()` vía `loadTaAndCuitForWsfe()`. Se mantiene `loadTAFromDisk()` como wrapper sólo lectura (depuración).
+- **Rutas** `arca.routes.ts`: helper `wsfeErrorHttpStatus()` para 400 (CUIT / mensajes heredados con `tmp/ta.json`) vs 502.
+
 - Módulo **WSAA LoginCms (homologación)** en `src/arca/wsaa.ts`:
   - `createLoginTicketRequest()` — XML TRA con ventanas ±10 min y `uniqueId` por timestamp.
   - `signCMS()` — firma PKCS#7 DER vía `openssl cms -sign` (cert `.crt` + clave `.key`).
@@ -17,7 +21,7 @@
 - **Ruta** `POST /pdf/invoice` — body JSON validado con Zod (`invoicePdfBodySchema` en `src/pdf/invoice-models.ts`); genera PDF en **`tmp/invoices/{cuit11}_{cbteTipo}_{ptoVta}_{numero}.pdf`** vía HTML + **Playwright** (`src/pdf/invoice-template.ts`, `src/pdf/invoice-pdf.ts`); intenta **Chromium bundleado**, luego canal **Chrome / Edge** instalado; opcional `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`; si nada funciona **503** (`PlaywrightPdfSetupError`). **`renderInvoicePdfBuffer`** para otros endpoints; QR AFIP `https://www.afip.gob.ar/fe/qr/?p=` + base64url del JSON (ver, fecha, cuit, ptoVta, tipoCmp, nroCmp, importe, moneda, ctz, tipoDocRec, nroDocRec, tipoCodAut **E**, codAut). Respuesta `{ ok, path, filename }`.
 - **Ruta** `GET /arca/wsaa/login` — devuelve `generationTime`; **409** si AFIP marca TA válido pero no hay entrada usable en `./tmp/ta.json` (ni TA en memoria).
 - Módulo **WSFEv1 (homologación)** en `src/arca/wsfev1.ts`:
-  - Wrapper `loadTAFromDisk()` sobre `wsaa`; `buildSoapEnvelope()`, `callWSFEV1()`, `parseWsfeSoapXml()`.
+  - TA automático con **`getValidTA()`** (`src/services/arca/ta-manager.ts`); `loadTAFromDisk()` sigue disponible como lectura directa desde `wsaa`.
   - `feCompUltimoAutorizado({ ptoVta, cbteTipo })` — SOAP 1.1, ns `http://ar.gov.afip.dif.FEV1/`; parsea `Envelope.Body.FECompUltimoAutorizadoResponse.FECompUltimoAutorizadoResult` (campos `PtoVta`, `CbteTipo`, `CbteNro`; ya no se usa `ResultGet`); si hay `Errors` en ese nodo, error explícito; log debug solo esos tres campos.
   - `feCAESolicitar()` — `FECAESolicitar` con `FeCAEReq` / `FeCabReq` / `FeDetReq` / **`FECAEDetRequest`** (incluye `CondicionIVAReceptorId` tras `MonCotiz`); previo `FECompUltimoAutorizado`; `nextNumber = CbteNro + 1`. Log temporal: SOAP completo antes del POST (quitar en prod).
   - Parser `distillFecaSolicitarResponse`: lectura prioritario `FECAEDetResponse`, fallback `FECAEADetailResponse`; `observations[]` desde `Observaciones`/`Observations` (`Obs`).
@@ -51,7 +55,7 @@ Definir variables en **`.env` en la raíz del repo** (cargado al arrancar con `d
 1. Documentar más ejemplos de query `GET …/voucher-pdf` (copias + receptor).
 2. Quitar el log temporal del XML completo de `FECAESolicitar` antes de producción (expone token/sign en cuerpo SOAP).
 3. Probar en homo `GET /arca/wsfe/last-voucher` y `POST /arca/wsfe/create-voucher` tras el fix de `FECompUltimoAutorizado`.
-4. Probar homologación: reinicio del proceso debe rehidratar TA desde `tmp/ta.json` si sigue válido.
+4. Probar homologación: WSFE debe renovar TA al acercarse el vencimiento (ventana 5 min en `ta-manager`) y persistir en `tmp/ta.json`.
 5. Proteger o desactivar `GET /arca/wsaa/login` en producción (sin auth expone TA).
 
 ## Notas

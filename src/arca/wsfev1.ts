@@ -1,11 +1,12 @@
 /**
- * AFIP WSFEv1 — homologación (DEV). Usa TA cacheado en ./tmp/ta.json (ver `wsaa.loadTAFromDisk`).
+ * AFIP WSFEv1 — homologación (DEV). TA vía `getValidTA()` (`src/services/arca/ta-manager.ts`).
  */
 
 import axios from "axios";
 import { XMLParser } from "fast-xml-parser";
 import { z } from "zod";
-import { isTAExpired, loadTAFromDisk as loadTaFromWsaaDisk } from "./wsaa.js";
+import { getValidTA } from "../services/arca/ta-manager.js";
+import { loadTAFromDisk as loadTaFromWsaaDisk } from "./wsaa.js";
 import type { WsaaTicketAccess } from "./wsaa.js";
 
 const FEV1_NAMESPACE = "http://ar.gov.afip.dif.FEV1/";
@@ -38,7 +39,7 @@ export class WsfeError extends Error {
   }
 }
 
-/** TA desde `./tmp/ta.json` (wrapper explícito para este módulo). */
+/** TA desde `./tmp/ta.json` (lectura directa; WSFE usa `getValidTA` con renovación automática). */
 export function loadTAFromDisk(): WsaaTicketAccess | null {
   return loadTaFromWsaaDisk();
 }
@@ -241,30 +242,30 @@ export type FeCompUltimoAutorizadoParams = {
   cbteTipo: number;
 };
 
-function loadTaAndCuitForWsfe(): { ta: WsaaTicketAccess; cuit: string } {
-  const ta = loadTAFromDisk();
-  if (!ta) {
-    throw new WsfeError("No hay TA en ./tmp/ta.json; ejecutá primero WSAA login o creá el archivo.");
+type TaCredentials = Pick<WsaaTicketAccess, "token" | "sign">;
+
+async function loadTaAndCuitForWsfe(): Promise<{ ta: TaCredentials; cuit: string }> {
+  try {
+    const ta = await getValidTA();
+    const cuitRaw = process.env["ARCA_CUIT"];
+    if (!cuitRaw || cuitRaw.trim() === "") {
+      throw new WsfeError("Missing ARCA_CUIT in environment.");
+    }
+    const cuit = sanitizeCuit(cuitRaw);
+    if (cuit.length < 11) {
+      throw new WsfeError("ARCA_CUIT inválido (solo dígitos, 11 caracteres esperados para CUIT).");
+    }
+    return { ta, cuit };
+  } catch (err) {
+    if (err instanceof WsfeError) {
+      throw err;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new WsfeError(`No se pudo obtener TA para WSFE: ${msg}`, err);
   }
-  if (isTAExpired(ta.expirationTime)) {
-    throw new WsfeError("TA expirado en ./tmp/ta.json según expirationTime (margen seguridad aplicado).");
-  }
-  const cuitRaw = process.env["ARCA_CUIT"];
-  if (!cuitRaw || cuitRaw.trim() === "") {
-    throw new WsfeError("Missing ARCA_CUIT in environment.");
-  }
-  const cuit = sanitizeCuit(cuitRaw);
-  if (cuit.length < 11) {
-    throw new WsfeError("ARCA_CUIT inválido (solo dígitos, 11 caracteres esperados para CUIT).");
-  }
-  return { ta, cuit };
 }
 
-function buildAuthBlock(
-  ta: WsaaTicketAccess,
-  cuit: string,
-  opts?: { logPreview?: boolean },
-): string {
+function buildAuthBlock(ta: TaCredentials, cuit: string, opts?: { logPreview?: boolean }): string {
   if (opts?.logPreview !== false) {
     logCredPreview("Token TA", ta.token);
     logCredPreview("Sign TA", ta.sign);
@@ -292,7 +293,7 @@ export async function feCompUltimoAutorizado(
   params: FeCompUltimoAutorizadoParams,
   options?: FeCompUltimoAutorizadoOptions,
 ): Promise<Record<string, unknown>> {
-  const { ta, cuit } = loadTaAndCuitForWsfe();
+  const { ta, cuit } = await loadTaAndCuitForWsfe();
   const logPreview = options?.logCredentialPreview !== false;
   const innerXml = `${buildAuthBlock(ta, cuit, { logPreview })}
     <ar:PtoVta>${String(params.ptoVta)}</ar:PtoVta>
@@ -410,7 +411,7 @@ function interpretFeCompConsultarSoap(parsed: Record<string, unknown>): Record<s
  * @returns Clon liviano del `ResultGet` de AFIP, o null si no hay comprobante (hueco / número inexistente).
  */
 export async function feCompConsultar(params: FeCompConsultarParams): Promise<Record<string, unknown> | null> {
-  const { ta, cuit } = loadTaAndCuitForWsfe();
+  const { ta, cuit } = await loadTaAndCuitForWsfe();
   const innerXml = `${buildAuthBlock(ta, cuit, { logPreview: false })}
     <ar:FeCompConsReq>
       <ar:CbteTipo>${String(params.cbteTipo)}</ar:CbteTipo>
@@ -781,7 +782,7 @@ ${alic}
  * Homologación: Factura B mínima vía FECAESolicitar (después de FECompUltimoAutorizado).
  */
 export async function feCAESolicitar(input: CreateVoucherBody): Promise<FecaSolicitarResultView> {
-  const { ta, cuit } = loadTaAndCuitForWsfe();
+  const { ta, cuit } = await loadTaAndCuitForWsfe();
 
   const ultimo = await feCompUltimoAutorizado({
     ptoVta: input.ptoVta,

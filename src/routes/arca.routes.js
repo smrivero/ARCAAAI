@@ -5,6 +5,15 @@ import { voucherPdfPostBodySchema } from "../pdf/invoice-models.js";
 import { applyVoucherPdfMetadataToPayload, mergeVoucherPdfPostIntoPayload, parseVoucherPdfQueryMetadata, } from "../pdf/invoice-pdf-merge.js";
 import { getWsaaTicketAccess, WsaaAlreadyAuthenticatedError, } from "../arca/wsaa.js";
 const TA_CONFLICT_MESSAGE = "AFIP indicates a TA is already valid for this credential, but this backend has no usable copy (no valid ./tmp/ta.json). Wait until AFIP TTL expires or place a TA JSON file there after a successful login elsewhere.";
+function wsfeErrorHttpStatus(err) {
+    const m = err.message;
+    if (m.includes("tmp/ta.json") ||
+        m.includes("Missing ARCA_CUIT") ||
+        m.includes("ARCA_CUIT inválido")) {
+        return 400;
+    }
+    return 502;
+}
 const QUERY_DATE_YYYYMMDD = /^\d{8}$/;
 export async function arcaRoutes(app) {
     app.get("/ping", async () => {
@@ -59,7 +68,7 @@ export async function arcaRoutes(app) {
         }
         catch (err) {
             if (err instanceof WsfeError) {
-                const status = err.message.includes("tmp/ta.json") ? 400 : 502;
+                const status = wsfeErrorHttpStatus(err);
                 request.log.warn({ errMsg: err.message }, "GET /arca/wsfe/last-voucher");
                 return await reply.status(status).send({ ok: false, error: err.message });
             }
@@ -137,7 +146,7 @@ export async function arcaRoutes(app) {
         }
         catch (err) {
             if (err instanceof WsfeError) {
-                const status = err.message.includes("tmp/ta.json") ? 400 : 502;
+                const status = wsfeErrorHttpStatus(err);
                 request.log.warn({ errMsg: err.message }, "GET /arca/wsfe/vouchers");
                 return await reply.status(status).send({ ok: false, error: err.message });
             }
@@ -224,7 +233,7 @@ export async function arcaRoutes(app) {
                 return await reply.status(503).send({ ok: false, error: err.message });
             }
             if (err instanceof WsfeError) {
-                const status = err.message.includes("tmp/ta.json") ? 400 : 502;
+                const status = wsfeErrorHttpStatus(err);
                 request.log.warn({ errMsg: err.message }, "GET /arca/wsfe/voucher-pdf");
                 return await reply.status(status).send({ ok: false, error: err.message });
             }
@@ -294,7 +303,7 @@ export async function arcaRoutes(app) {
                 return await reply.status(503).send({ ok: false, error: err.message });
             }
             if (err instanceof WsfeError) {
-                const status = err.message.includes("tmp/ta.json") ? 400 : 502;
+                const status = wsfeErrorHttpStatus(err);
                 request.log.warn({ errMsg: err.message }, "POST /arca/wsfe/voucher-pdf");
                 return await reply.status(status).send({ ok: false, error: err.message });
             }
@@ -334,7 +343,7 @@ export async function arcaRoutes(app) {
         }
         catch (err) {
             if (err instanceof WsfeError) {
-                const status = err.message.includes("tmp/ta.json") ? 400 : 502;
+                const status = wsfeErrorHttpStatus(err);
                 request.log.warn({ errMsg: err.message }, "POST /arca/wsfe/create-voucher");
                 return await reply.status(status).send({ ok: false, error: err.message });
             }

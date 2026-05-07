@@ -1,5 +1,5 @@
 /**
- * AFIP WSFEv1 — homologación (DEV). Usa TA cacheado en ./tmp/ta.json (ver `wsaa.loadTAFromDisk`).
+ * AFIP WSFEv1 — homologación (DEV). TA vía `getValidTA()` (`src/services/arca/ta-manager.ts`).
  */
 import { z } from "zod";
 import type { WsaaTicketAccess } from "./wsaa.js";
@@ -8,7 +8,7 @@ export declare class WsfeError extends Error {
     readonly name = "WsfeError";
     constructor(message: string, detail?: unknown | undefined);
 }
-/** TA desde `./tmp/ta.json` (wrapper explícito para este módulo). */
+/** TA desde `./tmp/ta.json` (lectura directa; WSFE usa `getValidTA` con renovación automática). */
 export declare function loadTAFromDisk(): WsaaTicketAccess | null;
 /**
  * Sobrecarga SOAP 1.1: método FEV1 y XML interno (hijos `<ar:*>` dentro de `<ar:methodName>`).

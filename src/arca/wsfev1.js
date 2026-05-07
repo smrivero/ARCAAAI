@@ -1,10 +1,11 @@
 /**
- * AFIP WSFEv1 — homologación (DEV). Usa TA cacheado en ./tmp/ta.json (ver `wsaa.loadTAFromDisk`).
+ * AFIP WSFEv1 — homologación (DEV). TA vía `getValidTA()` (`src/services/arca/ta-manager.ts`).
  */
 import axios from "axios";
 import { XMLParser } from "fast-xml-parser";
 import { z } from "zod";
-import { isTAExpired, loadTAFromDisk as loadTaFromWsaaDisk } from "./wsaa.js";
+import { getValidTA } from "../services/arca/ta-manager.js";
+import { loadTAFromDisk as loadTaFromWsaaDisk } from "./wsaa.js";
 const FEV1_NAMESPACE = "http://ar.gov.afip.dif.FEV1/";
 const SOAP_ENVELOPE_NS = "http://schemas.xmlsoap.org/soap/envelope/";
 function getRequiredEnv(name) {
@@ -29,7 +30,7 @@ export class WsfeError extends Error {
         this.detail = detail;
     }
 }
-/** TA desde `./tmp/ta.json` (wrapper explícito para este módulo). */
+/** TA desde `./tmp/ta.json` (lectura directa; WSFE usa `getValidTA` con renovación automática). */
 export function loadTAFromDisk() {
     return loadTaFromWsaaDisk();
 }
@@ -195,23 +196,26 @@ function throwIfFeCompUltimoResultHasAfipErrors(result) {
         throw new WsfeError(`FECompUltimoAutorizado: AFIP devolvió errores en FECompUltimoAutorizadoResult: ${msgs.join("; ")}`, result);
     }
 }
-function loadTaAndCuitForWsfe() {
-    const ta = loadTAFromDisk();
-    if (!ta) {
-        throw new WsfeError("No hay TA en ./tmp/ta.json; ejecutá primero WSAA login o creá el archivo.");
+async function loadTaAndCuitForWsfe() {
+    try {
+        const ta = await getValidTA();
+        const cuitRaw = process.env["ARCA_CUIT"];
+        if (!cuitRaw || cuitRaw.trim() === "") {
+            throw new WsfeError("Missing ARCA_CUIT in environment.");
+        }
+        const cuit = sanitizeCuit(cuitRaw);
+        if (cuit.length < 11) {
+            throw new WsfeError("ARCA_CUIT inválido (solo dígitos, 11 caracteres esperados para CUIT).");
+        }
+        return { ta, cuit };
     }
-    if (isTAExpired(ta.expirationTime)) {
-        throw new WsfeError("TA expirado en ./tmp/ta.json según expirationTime (margen seguridad aplicado).");
+    catch (err) {
+        if (err instanceof WsfeError) {
+            throw err;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new WsfeError(`No se pudo obtener TA para WSFE: ${msg}`, err);
     }
-    const cuitRaw = process.env["ARCA_CUIT"];
-    if (!cuitRaw || cuitRaw.trim() === "") {
-        throw new WsfeError("Missing ARCA_CUIT in environment.");
-    }
-    const cuit = sanitizeCuit(cuitRaw);
-    if (cuit.length < 11) {
-        throw new WsfeError("ARCA_CUIT inválido (solo dígitos, 11 caracteres esperados para CUIT).");
-    }
-    return { ta, cuit };
 }
 function buildAuthBlock(ta, cuit, opts) {
     if (opts?.logPreview !== false) {
@@ -229,7 +233,7 @@ function escapeXmlText(s) {
 }
 /** Último comprobante autorizado para punto de venta y tipo de comprobante. */
 export async function feCompUltimoAutorizado(params, options) {
-    const { ta, cuit } = loadTaAndCuitForWsfe();
+    const { ta, cuit } = await loadTaAndCuitForWsfe();
     const logPreview = options?.logCredentialPreview !== false;
     const innerXml = `${buildAuthBlock(ta, cuit, { logPreview })}
     <ar:PtoVta>${String(params.ptoVta)}</ar:PtoVta>
@@ -322,7 +326,7 @@ function interpretFeCompConsultarSoap(parsed) {
  * @returns Clon liviano del `ResultGet` de AFIP, o null si no hay comprobante (hueco / número inexistente).
  */
 export async function feCompConsultar(params) {
-    const { ta, cuit } = loadTaAndCuitForWsfe();
+    const { ta, cuit } = await loadTaAndCuitForWsfe();
     const innerXml = `${buildAuthBlock(ta, cuit, { logPreview: false })}
     <ar:FeCompConsReq>
       <ar:CbteTipo>${String(params.cbteTipo)}</ar:CbteTipo>
@@ -615,7 +619,7 @@ ${alic}
  * Homologación: Factura B mínima vía FECAESolicitar (después de FECompUltimoAutorizado).
  */
 export async function feCAESolicitar(input) {
-    const { ta, cuit } = loadTaAndCuitForWsfe();
+    const { ta, cuit } = await loadTaAndCuitForWsfe();
     const ultimo = await feCompUltimoAutorizado({
         ptoVta: input.ptoVta,
         cbteTipo: input.cbteTipo,
